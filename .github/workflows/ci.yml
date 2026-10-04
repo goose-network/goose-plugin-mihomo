@@ -1,0 +1,40 @@
+name: CI
+
+# Lint + test the plugin. The module's replace directives point at sibling
+# checkouts (goose-plugin-api, mihomo, sing-box) that do not exist on a
+# runner, so they are re-pointed at published refs first. mihomo has no
+# published Go module at a fixed tag, so the plugin is tested against the
+# Alpha branch head — the same source the goose engine pins.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Re-point local replace directives at published repos
+        run: |
+          go mod edit \
+            -replace=github.com/goose-network/goose-plugin-api=github.com/goose-network/goose-plugin-api@v0.0.0-20260923221657-7ba364a3ef3c \
+            -replace=github.com/metacubex/mihomo=github.com/metacubex/mihomo@v0.0.0-20260922124647-afe94dafef8c
+
+      - name: Resolve modules
+        run: go mod tidy
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -race -count=1 ./...
