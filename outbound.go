@@ -43,7 +43,11 @@ func newOutboundFactory(typ string) pub.OutboundFactory {
 			return nil, fmt.Errorf("mihomo %s outbound: missing proxy mapping", typ)
 		}
 		id, _ := cfg["id"].(string)
-		return &Outbound{id: id, proto: "mihomo-" + typ, mapping: raw}, nil
+		upstream, _ := cfg["upstream_proxy"].(string)
+		if _, err := parseUpstream(upstream); err != nil {
+			return nil, fmt.Errorf("mihomo %s outbound: %w", typ, err)
+		}
+		return &Outbound{id: id, proto: "mihomo-" + typ, mapping: raw, upstream: upstream}, nil
 	}
 }
 
@@ -56,6 +60,9 @@ type Outbound struct {
 	id      string
 	proto   string
 	mapping map[string]any
+	// upstream, when non-empty, routes this proxy's connection to its own
+	// server through a socks5 upstream (see upstream.go).
+	upstream string
 
 	once   sync.Once
 	proxy  C.Proxy
@@ -70,10 +77,21 @@ func (o *Outbound) ensure() error {
 		for k, v := range o.mapping {
 			m[k] = v
 		}
+		var options []adapter.ProxyOption
+		if o.upstream != "" {
+			dialer, err := upstreamDialer(o.upstream)
+			if err != nil {
+				o.buildE = err
+				return
+			}
+			// WithDialerForAPI outranks every in-mapping dialer option, so
+			// the proxy's server connections transit the upstream.
+			options = append(options, adapter.WithDialerForAPI(dialer))
+		}
 		// The provider already validated ParseProxy succeeds when it emitted
 		// the config, so a failure here is unexpected but non-fatal: surface
 		// it on every dial.
-		p, err := adapter.ParseProxy(m)
+		p, err := adapter.ParseProxy(m, options...)
 		if err != nil {
 			o.buildE = fmt.Errorf("mihomo outbound: build %s: %w", o.proto, err)
 			return
@@ -103,6 +121,12 @@ func (o *Outbound) Stats() pub.OutboundStats { return pub.OutboundStats{} }
 // passed to the remote server as-is (INNER metadata with Host set), so a
 // domain target is resolved by the proxy server, not locally — exactly the
 // semantics a proxied client expects.
+//
+// A dial timeout is applied on top of ctx: an unreachable proxy server
+// otherwise hangs for the OS SYN-retry window (~2 minutes), which starves
+// every pool rotation scheduled behind it (the engine's inbound gives dials
+// a 10-minute budget and dialChain does not fail over within one request).
+// The cap only ever shortens the caller's context.
 func (o *Outbound) DialContext(ctx context.Context, network pub.Network, target string) (net.Conn, error) {
 	if err := o.ensure(); err != nil {
 		return nil, err
@@ -117,7 +141,9 @@ func (o *Outbound) DialContext(ctx context.Context, network pub.Network, target 
 	if network == pub.NetworkUDP {
 		meta.NetWork = C.UDP
 	}
-	conn, err := o.proxy.DialContext(ctx, meta)
+	dialCtx, cancel := context.WithTimeout(ctx, outboundDialTimeout)
+	defer cancel()
+	conn, err := o.proxy.DialContext(dialCtx, meta)
 	if err != nil {
 		return nil, fmt.Errorf("mihomo outbound: dial %s via %s: %w", target, o.proto, err)
 	}
