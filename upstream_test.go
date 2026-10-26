@@ -97,14 +97,14 @@ func TestOutboundFactoryUpstreamWiring(t *testing.T) {
 	o, err := factory(map[string]any{
 		"id": "test-1",
 		"proxy": map[string]any{
-			"type":              "vless",
-			"name":              "test",
-			"server":            "relay.example.com",
-			"port":              443,
-			"uuid":              "00000000-0000-0000-0000-000000000001",
-			"flow":              "xtls-rprx-vision",
-			"tls":               true,
-			"servername":        "www.microsoft.com",
+			"type":               "vless",
+			"name":               "test",
+			"server":             "relay.example.com",
+			"port":               443,
+			"uuid":               "00000000-0000-0000-0000-000000000001",
+			"flow":               "xtls-rprx-vision",
+			"tls":                true,
+			"servername":         "www.microsoft.com",
 			"client-fingerprint": "chrome",
 			"reality-opts": map[string]any{
 				// Any valid 32-byte x25519 public key (base64url, unpadded):

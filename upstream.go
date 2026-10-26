@@ -22,8 +22,8 @@ import (
 	"strings"
 
 	"github.com/metacubex/mihomo/adapter"
-	C "github.com/metacubex/mihomo/constant"
 	"github.com/metacubex/mihomo/component/proxydialer"
+	C "github.com/metacubex/mihomo/constant"
 )
 
 // defaultUpstreamPort is the conventional SOCKS5 port, used when the
@@ -129,6 +129,23 @@ func parsePort(s string) (int, error) {
 	return p, nil
 }
 
+// upstreamSocks5Mapping builds the throwaway socks5 proxy mapping for one
+// parsed upstream address (shared by the plain and via-stack dialer
+// builders).
+func upstreamSocks5Mapping(uc *upstreamConfig) map[string]any {
+	mapping := map[string]any{
+		"type":   "socks5",
+		"name":   "goose-upstream",
+		"server": uc.server,
+		"port":   uc.port,
+	}
+	if uc.username != "" {
+		mapping["username"] = uc.username
+		mapping["password"] = uc.password
+	}
+	return mapping
+}
+
 // upstreamDialer builds the upstream socks5 proxy and wraps it as a C.Dialer
 // to inject via adapter.WithDialerForAPI. A nil address returns a nil dialer
 // (no upstream: dial direct).
@@ -140,17 +157,7 @@ func upstreamDialer(addr string) (C.Dialer, error) {
 	if uc == nil {
 		return nil, nil
 	}
-	mapping := map[string]any{
-		"type":   "socks5",
-		"name":   "goose-upstream",
-		"server": uc.server,
-		"port":   uc.port,
-	}
-	if uc.username != "" {
-		mapping["username"] = uc.username
-		mapping["password"] = uc.password
-	}
-	p, err := adapter.ParseProxy(mapping)
+	p, err := adapter.ParseProxy(upstreamSocks5Mapping(uc))
 	if err != nil {
 		return nil, fmt.Errorf("mihomo upstream: build socks5 proxy for %s:%d: %w", uc.server, uc.port, err)
 	}

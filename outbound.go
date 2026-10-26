@@ -2,6 +2,12 @@
 // every mihomo proxy type. The factory is shared: the provider registers the
 // proxy mapping under cfg["proxy"], and each protocol name dispatches through
 // the same builder.
+//
+// The engine injects its layer-3/4 stack dialer under the reserved "_dialer"
+// key (goose-plugin-api's StackDialer); the factory consumes it, so the
+// proxy's connection to its own server rides the engine's network stack
+// instead of a bare system socket (stack.go), composing under a configured
+// upstream_proxy (upstream.go).
 package mihomo
 
 import (
@@ -47,7 +53,17 @@ func newOutboundFactory(typ string) pub.OutboundFactory {
 		if _, err := parseUpstream(upstream); err != nil {
 			return nil, fmt.Errorf("mihomo %s outbound: %w", typ, err)
 		}
-		return &Outbound{id: id, proto: "mihomo-" + typ, mapping: raw, upstream: upstream}, nil
+		return &Outbound{
+			id:       id,
+			proto:    "mihomo-" + typ,
+			mapping:  raw,
+			upstream: upstream,
+			// The router injects the engine's layer-3/4 stack dialer under
+			// the reserved "_dialer" key; consuming it routes this proxy's
+			// connection to its own server through the engine stack (see
+			// stack.go).
+			stack: pub.AsStackDialer(cfg),
+		}, nil
 	}
 }
 
@@ -63,6 +79,11 @@ type Outbound struct {
 	// upstream, when non-empty, routes this proxy's connection to its own
 	// server through a socks5 upstream (see upstream.go).
 	upstream string
+	// stack is the engine's injected layer-3/4 stack dialer, or nil when the
+	// engine did not inject one. It composes under upstream: the hop to the
+	// upstream (or, without one, to the proxy server itself) rides the
+	// engine stack (see stack.go).
+	stack pub.StackDialer
 
 	once   sync.Once
 	proxy  C.Proxy
@@ -77,16 +98,12 @@ func (o *Outbound) ensure() error {
 		for k, v := range o.mapping {
 			m[k] = v
 		}
-		var options []adapter.ProxyOption
-		if o.upstream != "" {
-			dialer, err := upstreamDialer(o.upstream)
-			if err != nil {
-				o.buildE = err
-				return
-			}
-			// WithDialerForAPI outranks every in-mapping dialer option, so
-			// the proxy's server connections transit the upstream.
-			options = append(options, adapter.WithDialerForAPI(dialer))
+		// Route the proxy's server connection through the upstream and/or
+		// the engine stack (see proxyOptionsFor for the precedence).
+		options, err := proxyOptionsFor(o.upstream, o.stack)
+		if err != nil {
+			o.buildE = fmt.Errorf("mihomo outbound: %w", err)
+			return
 		}
 		// The provider already validated ParseProxy succeeds when it emitted
 		// the config, so a failure here is unexpected but non-fatal: surface

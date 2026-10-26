@@ -86,8 +86,29 @@ func NewProvider(cfg map[string]any) (pub.Provider, error) {
 	return &Provider{
 		url:    u,
 		prefix: prefix,
-		client: &http.Client{Timeout: fetchTimeout},
+		client: fetchClient(cfg),
 	}, nil
+}
+
+// fetchClient builds the HTTP client for subscription downloads. When the
+// provider spec sets an upstream_proxy, the engine injects a routed dialer
+// into the config map (pkg/plugin.AsUpstreamDialer); the fetch then dials
+// through the engine route the spec names instead of the engine host's
+// local network, so blocked subscription URLs can be fetched through a
+// working proxy.
+func fetchClient(cfg map[string]any) *http.Client {
+	client := &http.Client{Timeout: fetchTimeout}
+	if d := pub.AsUpstreamDialer(cfg); d != nil {
+		// Clone the default transport so its timeouts and HTTP/2 negotiation
+		// apply over the tunnel, but drop its ambient proxy support
+		// (HTTP_PROXY et al.): the upstream dialer is the route, and layering
+		// an env proxy on top of it would double-proxy.
+		transport := http.DefaultTransport.(*http.Transport).Clone()
+		transport.Proxy = nil
+		transport.DialContext = d.DialUpstream
+		client.Transport = transport
+	}
+	return client
 }
 
 // Name identifies the plugin.
