@@ -40,6 +40,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"time"
 
@@ -90,22 +91,31 @@ func NewProvider(cfg map[string]any) (pub.Provider, error) {
 	}, nil
 }
 
-// fetchClient builds the HTTP client for subscription downloads. When the
-// provider spec sets an upstream_proxy, the engine injects a routed dialer
-// into the config map (pkg/plugin.AsUpstreamDialer); the fetch then dials
-// through the engine route the spec names instead of the engine host's
-// local network, so blocked subscription URLs can be fetched through a
-// working proxy.
+// fetchClient builds the HTTP client for subscription downloads. The fetch
+// always rides the engine: when the provider spec's upstream_proxy names an
+// engine route, the engine injects the routed dialer (AsUpstreamDialer) and
+// the fetch dials through it — a specific outbound, a pool, a chain, or the
+// access pool — instead of the engine host's local network, so blocked
+// subscription URLs can be fetched through a working proxy. Without a named
+// route, the fetch still uses the injected engine stack dialer
+// (AsStackDialer — the system or gvisor stack) rather than a bare
+// net.Dialer.
 func fetchClient(cfg map[string]any) *http.Client {
 	client := &http.Client{Timeout: fetchTimeout}
+	var fetchDial func(ctx context.Context, network, address string) (net.Conn, error)
 	if d := pub.AsUpstreamDialer(cfg); d != nil {
+		fetchDial = d.DialUpstream
+	} else if s := pub.AsStackDialer(cfg); s != nil {
+		fetchDial = s.Dial
+	}
+	if fetchDial != nil {
 		// Clone the default transport so its timeouts and HTTP/2 negotiation
-		// apply over the tunnel, but drop its ambient proxy support
-		// (HTTP_PROXY et al.): the upstream dialer is the route, and layering
+		// apply over the injected dialer, but drop its ambient proxy support
+		// (HTTP_PROXY et al.): the engine injection is the route, and layering
 		// an env proxy on top of it would double-proxy.
 		transport := http.DefaultTransport.(*http.Transport).Clone()
 		transport.Proxy = nil
-		transport.DialContext = d.DialUpstream
+		transport.DialContext = fetchDial
 		client.Transport = transport
 	}
 	return client

@@ -63,6 +63,12 @@ func newOutboundFactory(typ string) pub.OutboundFactory {
 			// connection to its own server through the engine stack (see
 			// stack.go).
 			stack: pub.AsStackDialer(cfg),
+			// When the outbound spec's upstream_proxy names an engine route,
+			// the router injects the route dialer under the reserved
+			// "_upstream_dialer" key instead; consuming it tunnels the server
+			// connection through the route and supersedes the raw socks5
+			// upstream form (see stack.go's precedence).
+			route: pub.AsUpstreamDialer(cfg),
 		}, nil
 	}
 }
@@ -77,13 +83,19 @@ type Outbound struct {
 	proto   string
 	mapping map[string]any
 	// upstream, when non-empty, routes this proxy's connection to its own
-	// server through a socks5 upstream (see upstream.go).
+	// server through a socks5 upstream (see upstream.go). Superseded by
+	// route when the engine injected one.
 	upstream string
 	// stack is the engine's injected layer-3/4 stack dialer, or nil when the
 	// engine did not inject one. It composes under upstream: the hop to the
 	// upstream (or, without one, to the proxy server itself) rides the
 	// engine stack (see stack.go).
 	stack pub.StackDialer
+	// route is the engine's injected upstream-route dialer, or nil when the
+	// outbound spec's upstream_proxy does not name an engine route. When
+	// present, the server connection tunnels through the route (see
+	// stack.go's precedence) — the raw upstream form is ignored.
+	route pub.UpstreamDialer
 
 	once   sync.Once
 	proxy  C.Proxy
@@ -98,9 +110,10 @@ func (o *Outbound) ensure() error {
 		for k, v := range o.mapping {
 			m[k] = v
 		}
-		// Route the proxy's server connection through the upstream and/or
-		// the engine stack (see proxyOptionsFor for the precedence).
-		options, err := proxyOptionsFor(o.upstream, o.stack)
+		// Route the proxy's server connection through the engine route,
+		// upstream and/or the engine stack (see proxyOptionsFor for the
+		// precedence).
+		options, err := proxyOptionsFor(o.upstream, o.stack, o.route)
 		if err != nil {
 			o.buildE = fmt.Errorf("mihomo outbound: %w", err)
 			return
